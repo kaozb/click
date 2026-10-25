@@ -520,6 +520,15 @@ public class MainActivity extends Activity {
     }
 
     private void openAccessibilitySettings() {
+        // 优先直达本服务的无障碍详情页，少走一层总列表
+        try {
+            Intent detail = new Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS");
+            detail.putExtra(Intent.EXTRA_COMPONENT_NAME,
+                    new ComponentName(this, ClickAccessibilityService.class).flattenToString());
+            startActivity(detail);
+            return;
+        } catch (Throwable ignored) {
+        }
         try {
             startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
         } catch (Throwable e) {
