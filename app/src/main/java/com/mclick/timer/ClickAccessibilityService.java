@@ -63,6 +63,8 @@ public class ClickAccessibilityService extends AccessibilityService {
     private View overlay;
     private TextView label;
     private WindowManager.LayoutParams params;
+    private View statusView;
+    private WindowManager.LayoutParams statusParams;
 
     private final Handler main = new Handler(Looper.getMainLooper());
     private Thread scheduler;
@@ -283,10 +285,17 @@ public class ClickAccessibilityService extends AccessibilityService {
         }
         if (overlay == null) {
             buildOverlay();
+            buildStatus();
         }
         if (overlay.getParent() == null) {
             try {
                 wm.addView(overlay, params);
+            } catch (Throwable ignored) {
+            }
+        }
+        if (statusView != null && statusView.getParent() == null) {
+            try {
+                wm.addView(statusView, statusParams);
             } catch (Throwable ignored) {
             }
         }
@@ -296,6 +305,12 @@ public class ClickAccessibilityService extends AccessibilityService {
         if (overlay != null && overlay.getParent() == null && wm != null) {
             try {
                 wm.addView(overlay, params);
+            } catch (Throwable ignored) {
+            }
+        }
+        if (statusView != null && statusView.getParent() == null && wm != null) {
+            try {
+                wm.addView(statusView, statusParams);
             } catch (Throwable ignored) {
             }
         }
@@ -311,21 +326,7 @@ public class ClickAccessibilityService extends AccessibilityService {
         box.setGravity(Gravity.CENTER_HORIZONTAL);
 
         CrossView dot = new CrossView(this);
-        box.addView(dot, new LinearLayout.LayoutParams(dp(64), dp(64)));
-
-        label = new TextView(this);
-        label.setTextColor(Color.WHITE);
-        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
-        label.setSingleLine(true);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(0xCC000000);
-        bg.setCornerRadius(dp(6));
-        label.setBackground(bg);
-        label.setPadding(dp(6), dp(2), dp(6), dp(2));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = dp(4);
-        box.addView(label, lp);
+        box.addView(dot, new LinearLayout.LayoutParams(dp(32), dp(32)));
 
         overlay = box;
 
@@ -342,10 +343,10 @@ public class ClickAccessibilityService extends AccessibilityService {
 
         SharedPreferences sp = getSharedPreferences(PREF, MODE_PRIVATE);
         DisplayMetrics dm = getResources().getDisplayMetrics();
-        params.x = Math.max(0, Math.min(sp.getInt(KEY_X, dm.widthPixels / 2 - dp(32)),
-                dm.widthPixels - dp(64)));
-        params.y = Math.max(0, Math.min(sp.getInt(KEY_Y, dm.heightPixels / 2 - dp(50)),
-                dm.heightPixels - dp(90)));
+        params.x = Math.max(0, Math.min(sp.getInt(KEY_X, dm.widthPixels / 2 - dp(16)),
+                dm.widthPixels - dp(32)));
+        params.y = Math.max(0, Math.min(sp.getInt(KEY_Y, dm.heightPixels / 2 - dp(16)),
+                dm.heightPixels - dp(32)));
 
         box.setOnTouchListener(new View.OnTouchListener() {
             private float downRawX, downRawY;
@@ -403,10 +404,43 @@ public class ClickAccessibilityService extends AccessibilityService {
         });
     }
 
+    /** 倒计时浮标：固定在屏幕顶部中间，不随准星移动，也不拦截触摸。 */
+    private void buildStatus() {
+        label = new TextView(this);
+        label.setTextColor(Color.WHITE);
+        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        label.setSingleLine(true);
+        label.setGravity(Gravity.CENTER);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xCC000000);
+        bg.setCornerRadius(dp(6));
+        label.setBackground(bg);
+        label.setPadding(dp(8), dp(3), dp(8), dp(3));
+        statusView = label;
+
+        int flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
+        statusParams = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                flags,
+                PixelFormat.TRANSLUCENT);
+        statusParams.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+        statusParams.y = dp(36);
+    }
+
     private void removeOverlay() {
         if (overlay != null && overlay.getParent() != null && wm != null) {
             try {
                 wm.removeView(overlay);
+            } catch (Throwable ignored) {
+            }
+        }
+        if (statusView != null && statusView.getParent() != null && wm != null) {
+            try {
+                wm.removeView(statusView);
             } catch (Throwable ignored) {
             }
         }
@@ -439,13 +473,18 @@ public class ClickAccessibilityService extends AccessibilityService {
             }
             updateLabel();
             long rem = targetWallMs - System.currentTimeMillis();
+            // 最后 10 秒内逐步提高刷新频率
             long delay;
             if (rem > 300_000L) {
                 delay = 5000L;
             } else if (rem > 60_000L) {
                 delay = 1000L;
             } else if (rem > 10_000L) {
+                delay = 500L;
+            } else if (rem > 5_000L) {
                 delay = 250L;
+            } else if (rem > 2_000L) {
+                delay = 150L;
             } else if (rem > 1_000L) {
                 delay = 100L;
             } else {
@@ -524,8 +563,8 @@ public class ClickAccessibilityService extends AccessibilityService {
             overlay.getLocationOnScreen(loc);
             int w = overlay.getWidth();
             clickPoint = new float[]{
-                    loc[0] + (w > 0 ? w / 2f : dp(32)),
-                    loc[1] + dp(32)
+                    loc[0] + (w > 0 ? w / 2f : dp(16)),
+                    loc[1] + dp(16)
             };
             try {
                 wm.removeView(overlay);
@@ -551,10 +590,10 @@ public class ClickAccessibilityService extends AccessibilityService {
             int[] loc = new int[2];
             overlay.getLocationOnScreen(loc);
             x = loc[0] + overlay.getWidth() / 2f;
-            y = loc[1] + dp(32);
+            y = loc[1] + dp(16);
         } else {
-            x = params.x + dp(32);
-            y = params.y + dp(32);
+            x = params.x + dp(16);
+            y = params.y + dp(16);
         }
 
         Path path = new Path();
@@ -612,8 +651,8 @@ public class ClickAccessibilityService extends AccessibilityService {
             fill.setColor(0x66E53935);
             line.setColor(Color.WHITE);
             line.setStyle(Paint.Style.STROKE);
-            line.setStrokeWidth(c.getResources().getDisplayMetrics().density * 2f);
-            line.setShadowLayer(4f, 0f, 0f, 0x99000000);
+            line.setStrokeWidth(c.getResources().getDisplayMetrics().density * 1.5f);
+            line.setShadowLayer(2f, 0f, 0f, 0x99000000);
             setLayerType(LAYER_TYPE_SOFTWARE, null);
         }
 
@@ -621,7 +660,7 @@ public class ClickAccessibilityService extends AccessibilityService {
         protected void onDraw(Canvas canvas) {
             float cx = getWidth() / 2f;
             float cy = getHeight() / 2f;
-            float r = Math.min(cx, cy) - 4f * getResources().getDisplayMetrics().density;
+            float r = Math.min(cx, cy) - 2f * getResources().getDisplayMetrics().density;
             canvas.drawCircle(cx, cy, r, fill);
             canvas.drawCircle(cx, cy, r, line);
             float arm = r * 0.55f;
