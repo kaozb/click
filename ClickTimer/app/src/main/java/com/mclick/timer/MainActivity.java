@@ -37,17 +37,16 @@ public class MainActivity extends Activity {
     private EditText offsetInput;
     private TextView statusText;
     private TextView accessChip;
-    private TextView overlayButton;
-    private TextView startButtonRef;
+    private Button overlayButton;
     private Button startButton;
     private Button stopButton;
-    private Button overlayButtonReal;
     private LinearLayout listContainer;
     private TextView emptyHint;
     private TextView listCount;
     private View led;
 
     private final List<String> times = new ArrayList<>();
+    private String selectedSpec = "";
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final SimpleDateFormat fmt = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
     private boolean pendingStart;
@@ -58,7 +57,7 @@ public class MainActivity extends Activity {
             if (pendingStart && isAccessibilityEnabled()
                     && ClickAccessibilityService.getInstance() != null) {
                 pendingStart = false;
-                armFromList();
+                startSelected();
             }
             refreshStatus();
             handler.postDelayed(this, 100);
@@ -105,7 +104,7 @@ public class MainActivity extends Activity {
         listCount = findViewById(R.id.list_count);
         startButton = findViewById(R.id.start_button);
         stopButton = findViewById(R.id.stop_button);
-        overlayButtonReal = findViewById(R.id.overlay_button);
+        overlayButton = findViewById(R.id.overlay_button);
     }
 
     private void setupPickers() {
@@ -125,23 +124,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void loadLastPicker() {
-        int[] t = new int[4];
-        String last = prefs.getString(ClickAccessibilityService.KEY_TIME_TEXT, "19:59:59.500");
-        if (!ClickAccessibilityService.parseSpec(last, t)) {
-            t[0] = 19;
-            t[1] = 59;
-            t[2] = 59;
-            t[3] = 500;
-        }
-        hourPicker.setValue(t[0]);
-        minutePicker.setValue(t[1]);
-        secondPicker.setValue(t[2]);
-        msInput.setText(String.valueOf(t[3]));
-        msInput.setSelection(msInput.getText().length());
-        offsetInput.setText(String.valueOf(prefs.getInt(ClickAccessibilityService.KEY_OFFSET, 0)));
-    }
-
     private void loadTimes() {
         times.clear();
         LinkedHashSet<String> set = new LinkedHashSet<>();
@@ -157,16 +139,56 @@ public class MainActivity extends Activity {
         }
         times.addAll(set);
         Collections.sort(times);
+
+        String saved = prefs.getString(ClickAccessibilityService.KEY_SELECTED, "");
+        if (!times.contains(saved)) {
+            saved = times.isEmpty() ? "" : times.get(0);
+        }
+        selectedSpec = saved;
+        prefs.edit().putString(ClickAccessibilityService.KEY_SELECTED, selectedSpec).apply();
+    }
+
+    private void loadLastPicker() {
+        int[] t = new int[4];
+        String last = selectedSpec;
+        if (!ClickAccessibilityService.parseSpec(last, t)) {
+            last = prefs.getString(ClickAccessibilityService.KEY_TIME_TEXT, "19:59:59.500");
+        }
+        if (!ClickAccessibilityService.parseSpec(last, t)) {
+            t[0] = 19;
+            t[1] = 59;
+            t[2] = 59;
+            t[3] = 500;
+        }
+        applyToPickers(t[0], t[1], t[2], t[3]);
+        offsetInput.setText(String.valueOf(prefs.getInt(ClickAccessibilityService.KEY_OFFSET, 0)));
+    }
+
+    private void applyToPickers(int h, int m, int s, int ms) {
+        hourPicker.setValue(h);
+        minutePicker.setValue(m);
+        secondPicker.setValue(s);
+        msInput.setText(String.valueOf(ms));
+        msInput.setSelection(msInput.getText().length());
+    }
+
+    private void loadPickerFromSpec(String spec) {
+        int[] t = new int[4];
+        if (ClickAccessibilityService.parseSpec(spec, t)) {
+            applyToPickers(t[0], t[1], t[2], t[3]);
+        }
     }
 
     private void saveTimes() {
-        prefs.edit().putString(ClickAccessibilityService.KEY_TIMES,
-                TextUtils.join(",", times)).apply();
+        prefs.edit()
+                .putString(ClickAccessibilityService.KEY_TIMES, TextUtils.join(",", times))
+                .putString(ClickAccessibilityService.KEY_SELECTED, selectedSpec)
+                .apply();
     }
 
     private void setupListeners() {
         findViewById(R.id.add_button).setOnClickListener(v -> addTime());
-        startButton.setOnClickListener(v -> armFromList());
+        startButton.setOnClickListener(v -> startSelected());
         stopButton.setOnClickListener(v -> {
             ClickAccessibilityService svc = ClickAccessibilityService.getInstance();
             if (svc != null) {
@@ -175,7 +197,7 @@ public class MainActivity extends Activity {
             toast("已停止执行，悬浮按钮保留，可再次启动");
             refreshStatus();
         });
-        overlayButtonReal.setOnClickListener(v -> toggleOverlay());
+        overlayButton.setOnClickListener(v -> toggleOverlay());
         accessChip.setOnClickListener(v -> openAccessibilitySettings());
     }
 
@@ -187,7 +209,8 @@ public class MainActivity extends Activity {
         String spec = ClickAccessibilityService.formatSpec(
                 hourPicker.getValue(), minutePicker.getValue(), secondPicker.getValue(), ms);
         if (times.contains(spec)) {
-            toast("这个时间已经在列表里了");
+            toast("这个时间已经在列表里了，已直接选中");
+            selectTime(spec, true);
             return;
         }
         if (times.size() >= 30) {
@@ -196,16 +219,19 @@ public class MainActivity extends Activity {
         }
         times.add(spec);
         Collections.sort(times);
+        selectedSpec = spec;
         saveTimes();
         prefs.edit().putString(ClickAccessibilityService.KEY_TIME_TEXT, spec).apply();
-        if (ClickAccessibilityService.armed) {
+
+        boolean wasArmed = ClickAccessibilityService.armed;
+        if (wasArmed) {
             ClickAccessibilityService svc = ClickAccessibilityService.getInstance();
             if (svc != null) {
                 svc.stopArm();
             }
-            toast("已保存并停止当前执行，请重新点「启动定时点击」");
+            toast("已保存并选中，已停止原执行，请重新点「启动选中时间」");
         } else {
-            toast("已保存：" + spec);
+            toast("已保存并选中：" + spec);
         }
         renderList();
         refreshStatus();
@@ -255,40 +281,79 @@ public class MainActivity extends Activity {
         listCount.setText(times.size() + " 个");
         LayoutInflater inflater = LayoutInflater.from(this);
         for (String spec : new ArrayList<>(times)) {
+            final boolean selected = spec.equals(selectedSpec);
             View row = inflater.inflate(R.layout.item_time, listContainer, false);
-            ((TextView) row.findViewById(R.id.item_time)).setText(spec);
-            row.findViewById(R.id.item_delete).setOnClickListener(v -> {
-                times.remove(spec);
-                saveTimes();
-                boolean wasArmed = ClickAccessibilityService.armed;
-                if (wasArmed) {
-                    ClickAccessibilityService svc = ClickAccessibilityService.getInstance();
-                    if (svc != null) {
-                        svc.stopArm();
-                    }
-                }
-                renderList();
-                refreshStatus();
-                toast(wasArmed ? "已删除并停止执行，请重新启动" : "已删除 " + spec);
-            });
+            TextView timeView = row.findViewById(R.id.item_time);
+            View dot = row.findViewById(R.id.item_dot);
+            timeView.setText(spec);
+            row.setBackgroundResource(selected
+                    ? R.drawable.bg_pill_selected : R.drawable.bg_pill);
+            timeView.setTextColor(selected ? 0xFF66855A : 0xFF3E3930);
+            timeView.setTypeface(timeView.getTypeface(),
+                    selected ? android.graphics.Typeface.BOLD : android.graphics.Typeface.NORMAL);
+            dot.setBackgroundResource(selected ? R.drawable.led_on : R.drawable.led_off);
+
+            row.setOnClickListener(v -> selectTime(spec, true));
+            row.findViewById(R.id.item_delete).setOnClickListener(v -> deleteTime(spec));
             listContainer.addView(row);
         }
     }
 
-    private void armFromList() {
-        if (times.isEmpty()) {
-            toast("请先保存至少一个时间");
+    private void selectTime(String spec, boolean loadPicker) {
+        if (!times.contains(spec)) {
             return;
         }
-        int ms = parseMilliseconds();
-        if (ms < 0) {
+        boolean changed = !spec.equals(selectedSpec);
+        selectedSpec = spec;
+        saveTimes();
+        if (changed && ClickAccessibilityService.armed) {
+            ClickAccessibilityService svc = ClickAccessibilityService.getInstance();
+            if (svc != null) {
+                svc.stopArm();
+            }
+            toast("已切换选中时间并停止原执行，请重新启动");
+        }
+        if (loadPicker) {
+            loadPickerFromSpec(spec);
+        }
+        renderList();
+        refreshStatus();
+    }
+
+    private void deleteTime(String spec) {
+        times.remove(spec);
+        boolean wasSelected = spec.equals(selectedSpec);
+        if (wasSelected) {
+            selectedSpec = times.isEmpty() ? "" : times.get(0);
+        }
+        saveTimes();
+        boolean wasArmed = ClickAccessibilityService.armed;
+        if (wasArmed) {
+            ClickAccessibilityService svc = ClickAccessibilityService.getInstance();
+            if (svc != null) {
+                svc.stopArm();
+            }
+        }
+        if (wasSelected && !selectedSpec.isEmpty()) {
+            loadPickerFromSpec(selectedSpec);
+        }
+        renderList();
+        refreshStatus();
+        toast(wasArmed ? "已删除并停止执行，请重新启动"
+                : (wasSelected && !selectedSpec.isEmpty()
+                ? "已删除，当前选中 " + selectedSpec : "已删除 " + spec));
+    }
+
+    private void startSelected() {
+        if (selectedSpec.isEmpty()) {
+            toast("请先在列表中选中一个时间");
             return;
         }
-        String spec = ClickAccessibilityService.formatSpec(
-                hourPicker.getValue(), minutePicker.getValue(), secondPicker.getValue(), ms);
+        int offset = parseOffset();
         prefs.edit()
-                .putString(ClickAccessibilityService.KEY_TIME_TEXT, spec)
-                .putInt(ClickAccessibilityService.KEY_OFFSET, parseOffset())
+                .putString(ClickAccessibilityService.KEY_TIME_TEXT, selectedSpec)
+                .putString(ClickAccessibilityService.KEY_SELECTED, selectedSpec)
+                .putInt(ClickAccessibilityService.KEY_OFFSET, offset)
                 .apply();
 
         if (!isAccessibilityEnabled()) {
@@ -304,7 +369,7 @@ public class MainActivity extends Activity {
             return;
         }
         pendingStart = false;
-        svc.armAll(new ArrayList<>(times), parseOffset());
+        svc.arm(selectedSpec, offset);
         refreshStatus();
     }
 
@@ -324,8 +389,12 @@ public class MainActivity extends Activity {
             svc.hideOverlay();
             toast(wasArmed ? "已停止执行并隐藏悬浮按钮" : "已隐藏悬浮按钮");
         } else {
+            if (selectedSpec.isEmpty()) {
+                toast("请先保存并选中一个时间，再显示悬浮按钮");
+                return;
+            }
             svc.showOverlayOnly();
-            toast("拖动准星到目标位置后，点「启动定时点击」");
+            toast("拖动准星到目标位置后，点「启动选中时间」");
         }
         refreshStatus();
     }
@@ -335,39 +404,40 @@ public class MainActivity extends Activity {
         boolean armed = ClickAccessibilityService.armed;
         boolean shown = ClickAccessibilityService.overlayShown;
         long next = ClickAccessibilityService.targetWallMs;
-        int remaining = ClickAccessibilityService.remainingCount;
         long now = System.currentTimeMillis();
 
         if (armed && next > now) {
             long rem = next - now;
-            statusText.setText("已启动 · 剩 " + remaining + " 个 · "
-                    + fmt.format(new Date(next)) + " · "
+            statusText.setText("已启动 · " + fmt.format(new Date(next)) + " · "
                     + (rem / 1000) + "." + String.format(Locale.US, "%03d", rem % 1000) + "s");
             led.setBackgroundResource(R.drawable.led_on);
         } else if (armed) {
             statusText.setText("正在执行点击…");
             led.setBackgroundResource(R.drawable.led_on);
+        } else if (!enabled) {
+            statusText.setText("无障碍未开启，无法执行");
+            led.setBackgroundResource(R.drawable.led_off);
+        } else if (selectedSpec.isEmpty()) {
+            statusText.setText("待启动 · 保存并选中一个时间");
+            led.setBackgroundResource(R.drawable.led_off);
         } else if (shown) {
             long last = ClickAccessibilityService.lastFireWallMs;
             if (last > 0 && now - last < 60000L) {
                 statusText.setText("已执行 " + fmt.format(new Date(last))
-                        + " · 悬浮按钮待启动");
+                        + " · 已选中 " + selectedSpec);
             } else {
-                statusText.setText("悬浮按钮已显示 · 拖到目标位置后点「启动」");
+                statusText.setText("悬浮按钮已显示 · 已选中 " + selectedSpec + " · 点启动");
             }
             led.setBackgroundResource(R.drawable.led_wait);
-        } else if (!enabled) {
-            statusText.setText("无障碍未开启，无法执行");
-            led.setBackgroundResource(R.drawable.led_off);
         } else {
-            statusText.setText("待启动 · 保存时间后点「启动定时点击」");
+            statusText.setText("待启动 · 已选中 " + selectedSpec + " · 点「启动」执行");
             led.setBackgroundResource(R.drawable.led_off);
         }
 
         accessChip.setText(enabled ? "无障碍 已开启" : "去开启无障碍");
-        overlayButtonReal.setText(shown ? "隐藏悬浮按钮" : "显示悬浮按钮");
+        overlayButton.setText(shown ? "隐藏悬浮按钮" : "显示悬浮按钮");
         stopButton.setVisibility(armed ? View.VISIBLE : View.GONE);
-        startButton.setText(armed ? "重新启动" : "启动定时点击");
+        startButton.setText(armed ? "重新启动" : "启动选中时间");
     }
 
     private boolean isAccessibilityEnabled() {

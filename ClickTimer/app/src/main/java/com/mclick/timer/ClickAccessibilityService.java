@@ -25,12 +25,15 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.text.SimpleDateFormat;
+import java.util.Calendar;
 import java.util.Date;
 import java.util.Locale;
 import java.util.concurrent.locks.LockSupport;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
- * 无障碍服务：负责悬浮按钮、毫秒级定时以及手势点击。
+ * 无障碍服务：负责悬浮准星、单点定时以及手势点击。
  * 悬浮窗使用 TYPE_ACCESSIBILITY_OVERLAY，因此无需“显示在其他应用上层”权限。
  */
 public class ClickAccessibilityService extends AccessibilityService {
@@ -42,10 +45,17 @@ public class ClickAccessibilityService extends AccessibilityService {
     static final String KEY_Y = "y";
     static final String KEY_OFFSET = "offset";
     static final String KEY_TIME_TEXT = "time_text";
+    static final String KEY_TIMES = "times";
+    static final String KEY_SELECTED = "selected";
+    static final String KEY_OVERLAY = "overlay_shown";
+
+    private static final Pattern TIME_PATTERN =
+            Pattern.compile("^(\\d{1,2}):(\\d{1,2}):(\\d{1,2})(?:\\.(\\d{1,3}))?$");
 
     private static volatile ClickAccessibilityService sInstance;
 
     static volatile boolean armed;
+    static volatile boolean overlayShown;
     static volatile long targetWallMs;
     static volatile long lastFireWallMs;
 
@@ -59,7 +69,7 @@ public class ClickAccessibilityService extends AccessibilityService {
     private volatile boolean running;
     private volatile int offsetMs;
     private int generation;
-    private volatile Runnable pendingHide;
+    private Runnable pendingHide;
     private float[] clickPoint;
 
     private final SimpleDateFormat fmt = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
@@ -67,6 +77,63 @@ public class ClickAccessibilityService extends AccessibilityService {
     static ClickAccessibilityService getInstance() {
         return sInstance;
     }
+
+    // ---------------- 时间解析 ----------------
+
+    static boolean parseSpec(String s, int[] out) {
+        if (s == null) {
+            return false;
+        }
+        Matcher m = TIME_PATTERN.matcher(s.trim());
+        if (!m.matches()) {
+            return false;
+        }
+        int h = Integer.parseInt(m.group(1));
+        int mi = Integer.parseInt(m.group(2));
+        int sec = Integer.parseInt(m.group(3));
+        if (h > 23 || mi > 59 || sec > 59) {
+            return false;
+        }
+        int ms = 0;
+        String frac = m.group(4);
+        if (frac != null) {
+            while (frac.length() < 3) {
+                frac = frac + "0";
+            }
+            ms = Integer.parseInt(frac);
+        }
+        out[0] = h;
+        out[1] = mi;
+        out[2] = sec;
+        out[3] = ms;
+        return true;
+    }
+
+    static String formatSpec(int h, int m, int s, int ms) {
+        return String.format(Locale.US, "%02d:%02d:%02d.%03d", h, m, s, ms);
+    }
+
+    static long nextOccurrence(int h, int m, int s, int ms) {
+        Calendar c = Calendar.getInstance();
+        c.set(Calendar.HOUR_OF_DAY, h);
+        c.set(Calendar.MINUTE, m);
+        c.set(Calendar.SECOND, s);
+        c.set(Calendar.MILLISECOND, ms);
+        if (c.getTimeInMillis() <= System.currentTimeMillis() + 50L) {
+            c.add(Calendar.DAY_OF_YEAR, 1);
+        }
+        return c.getTimeInMillis();
+    }
+
+    private static boolean isTomorrow(long wall) {
+        Calendar a = Calendar.getInstance();
+        Calendar b = Calendar.getInstance();
+        b.setTimeInMillis(wall);
+        return a.get(Calendar.YEAR) != b.get(Calendar.YEAR)
+                || a.get(Calendar.DAY_OF_YEAR) != b.get(Calendar.DAY_OF_YEAR);
+    }
+
+    // ---------------- 生命周期 ----------------
 
     @Override
     protected void onServiceConnected() {
@@ -77,15 +144,20 @@ public class ClickAccessibilityService extends AccessibilityService {
         SharedPreferences sp = getSharedPreferences(PREF, MODE_PRIVATE);
         offsetMs = sp.getInt(KEY_OFFSET, 0);
         long savedTarget = sp.getLong(KEY_TARGET, 0L);
-        if (sp.getBoolean(KEY_ARMED, false) && savedTarget > System.currentTimeMillis()) {
+
+        if (sp.getBoolean(KEY_ARMED, false) && savedTarget > System.currentTimeMillis() + 20L) {
             armed = true;
+            overlayShown = true;
             targetWallMs = savedTarget;
             showOverlay();
-            startScheduler(savedTarget);
+            updateLabel();
             startTicker();
+            startScheduler(savedTarget);
+        } else if (sp.getBoolean(KEY_OVERLAY, false)) {
+            overlayShown = true;
+            showOverlay();
+            showIdleLabel();
         } else {
-            armed = false;
-            targetWallMs = 0L;
             sp.edit().putBoolean(KEY_ARMED, false).apply();
         }
     }
@@ -123,42 +195,59 @@ public class ClickAccessibilityService extends AccessibilityService {
         main.removeCallbacksAndMessages(null);
         removeOverlay();
         armed = false;
+        overlayShown = false;
         targetWallMs = 0L;
+        getSharedPreferences(PREF, MODE_PRIVATE).edit()
+                .putBoolean(KEY_ARMED, false)
+                .putBoolean(KEY_OVERLAY, false)
+                .apply();
     }
 
-    /** 由界面调用：按当天/次日的时:分:秒.毫秒 设定并显示悬浮按钮。 */
-    void arm(int hour, int minute, int second, int millis, int offset) {
-        offsetMs = offset;
-        long now = System.currentTimeMillis();
-        java.util.Calendar c = java.util.Calendar.getInstance();
-        c.set(java.util.Calendar.HOUR_OF_DAY, hour);
-        c.set(java.util.Calendar.MINUTE, minute);
-        c.set(java.util.Calendar.SECOND, second);
-        c.set(java.util.Calendar.MILLISECOND, millis);
-        if (c.getTimeInMillis() <= now + 50L) {
-            c.add(java.util.Calendar.DAY_OF_YEAR, 1);
+    // ---------------- 对外控制 ----------------
+
+    /** 只显示悬浮准星，便于拖动定位，不启动执行。 */
+    void showOverlayOnly() {
+        if (armed) {
+            return;
         }
-        targetWallMs = c.getTimeInMillis();
+        overlayShown = true;
+        getSharedPreferences(PREF, MODE_PRIVATE).edit()
+                .putBoolean(KEY_OVERLAY, true).apply();
+        showOverlay();
+        showIdleLabel();
+    }
+
+    /** 对选中的单个时间启动一次执行。 */
+    void arm(String spec, int offset) {
+        int[] t = new int[4];
+        if (!parseSpec(spec, t)) {
+            toast("时间格式不正确");
+            return;
+        }
+        long target = nextOccurrence(t[0], t[1], t[2], t[3]);
+        offsetMs = offset;
         armed = true;
+        overlayShown = true;
+        targetWallMs = target;
 
         getSharedPreferences(PREF, MODE_PRIVATE).edit()
                 .putBoolean(KEY_ARMED, true)
-                .putLong(KEY_TARGET, targetWallMs)
+                .putLong(KEY_TARGET, target)
                 .putInt(KEY_OFFSET, offset)
+                .putBoolean(KEY_OVERLAY, true)
                 .apply();
 
         showOverlay();
         updateLabel();
-        startScheduler(targetWallMs);
         startTicker();
+        startScheduler(target);
 
-        long diff = targetWallMs - now;
-        String when = diff < 86400000L ? "今天" : "明天";
-        toast("已设定 " + when + " " + fmt.format(new Date(targetWallMs))
-                + "，把悬浮按钮拖到要点击的位置即可");
+        toast("已启动 " + (isTomorrow(target) ? "明天 " : "今天 ")
+                + fmt.format(new Date(target)) + "，到点在准星位置点击一次");
     }
 
-    void disarm() {
+    /** 停止执行，但保留悬浮准星便于下次启动。 */
+    void stopArm() {
         running = false;
         generation++;
         Thread t = scheduler;
@@ -169,7 +258,20 @@ public class ClickAccessibilityService extends AccessibilityService {
         main.removeCallbacksAndMessages(null);
         armed = false;
         targetWallMs = 0L;
-        getSharedPreferences(PREF, MODE_PRIVATE).edit().putBoolean(KEY_ARMED, false).apply();
+        getSharedPreferences(PREF, MODE_PRIVATE).edit()
+                .putBoolean(KEY_ARMED, false).apply();
+        if (overlayShown) {
+            restoreOverlay();
+            showIdleLabel();
+        }
+    }
+
+    /** 停止并隐藏悬浮准星。 */
+    void hideOverlay() {
+        stopArm();
+        overlayShown = false;
+        getSharedPreferences(PREF, MODE_PRIVATE).edit()
+                .putBoolean(KEY_OVERLAY, false).apply();
         removeOverlay();
     }
 
@@ -183,6 +285,15 @@ public class ClickAccessibilityService extends AccessibilityService {
             buildOverlay();
         }
         if (overlay.getParent() == null) {
+            try {
+                wm.addView(overlay, params);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private void restoreOverlay() {
+        if (overlay != null && overlay.getParent() == null && wm != null) {
             try {
                 wm.addView(overlay, params);
             } catch (Throwable ignored) {
@@ -276,12 +387,14 @@ public class ClickAccessibilityService extends AccessibilityService {
                                     .putInt(KEY_X, params.x)
                                     .putInt(KEY_Y, params.y)
                                     .apply();
-                        } else {
+                        } else if (armed) {
                             long rem = targetWallMs - System.currentTimeMillis();
-                            if (armed && rem > 0) {
+                            if (rem > 0) {
                                 toast("距离点击还有 " + (rem / 1000) + "."
                                         + String.format(Locale.US, "%03d", rem % 1000) + " 秒");
                             }
+                        } else {
+                            toast("已定位。拖动可调整位置，点「启动选中时间」开始");
                         }
                         return true;
                 }
@@ -299,14 +412,23 @@ public class ClickAccessibilityService extends AccessibilityService {
         }
     }
 
+    private void showIdleLabel() {
+        if (label != null) {
+            label.setText("待启动 · 拖到目标位置");
+        }
+    }
+
     private void updateLabel() {
         if (label == null) {
             return;
         }
+        if (!armed || targetWallMs <= 0) {
+            showIdleLabel();
+            return;
+        }
         long rem = Math.max(0L, targetWallMs - System.currentTimeMillis());
-        String text = fmt.format(new Date(targetWallMs)) + "  剩 "
-                + (rem / 1000) + "." + String.format(Locale.US, "%03d", rem % 1000) + "s";
-        label.setText(text);
+        label.setText(fmt.format(new Date(targetWallMs)) + " · "
+                + (rem / 1000) + "." + String.format(Locale.US, "%03d", rem % 1000) + "s");
     }
 
     private final Runnable tick = new Runnable() {
@@ -342,9 +464,9 @@ public class ClickAccessibilityService extends AccessibilityService {
         final long fireAtNanos = SystemClock.elapsedRealtimeNanos()
                 + delayMs * 1_000_000L - offsetMs * 1_000_000L;
         final int myGen = ++generation;
+        final long target = targetWall;
 
         running = true;
-        final long target = targetWall;
         Thread t = new Thread(() -> {
             try {
                 // 提前约 250ms 移除悬浮窗，避免它挡住注入的点击
@@ -354,8 +476,7 @@ public class ClickAccessibilityService extends AccessibilityService {
                     }
                 };
                 pendingHide = hide;
-                long hideDelay = delayMs - 250L - offsetMs;
-                main.postDelayed(hide, Math.max(0L, hideDelay));
+                main.postDelayed(hide, Math.max(0L, delayMs - 250L - offsetMs));
 
                 // 先粗睡，最后 0.4ms 自旋，避免线程唤醒抖动
                 while (running) {
@@ -388,8 +509,9 @@ public class ClickAccessibilityService extends AccessibilityService {
         if (overlay != null && overlay.getParent() != null) {
             int[] loc = new int[2];
             overlay.getLocationOnScreen(loc);
+            int w = overlay.getWidth();
             clickPoint = new float[]{
-                    loc[0] + overlay.getWidth() / 2f,
+                    loc[0] + (w > 0 ? w / 2f : dp(32)),
                     loc[1] + dp(32)
             };
             try {
@@ -401,8 +523,10 @@ public class ClickAccessibilityService extends AccessibilityService {
 
     private void fire() {
         armed = false;
+        targetWallMs = 0L;
         lastFireWallMs = System.currentTimeMillis();
-        getSharedPreferences(PREF, MODE_PRIVATE).edit().putBoolean(KEY_ARMED, false).apply();
+        getSharedPreferences(PREF, MODE_PRIVATE).edit()
+                .putBoolean(KEY_ARMED, false).apply();
 
         float x;
         float y;
@@ -443,15 +567,6 @@ public class ClickAccessibilityService extends AccessibilityService {
         } catch (Throwable e) {
             main.post(() -> finishFire(false));
         }
-
-        main.postDelayed(() -> {
-            if (overlay != null && overlay.getParent() == null && wm != null) {
-                try {
-                    wm.addView(overlay, params);
-                } catch (Throwable ignored) {
-                }
-            }
-        }, 400);
     }
 
     private void finishFire(boolean ok) {
@@ -463,13 +578,10 @@ public class ClickAccessibilityService extends AccessibilityService {
             label.setText(text);
         }
         main.postDelayed(() -> {
-            if (overlay != null && overlay.getParent() == null && wm != null) {
-                try {
-                    wm.addView(overlay, params);
-                } catch (Throwable ignored) {
-                }
+            if (overlayShown) {
+                restoreOverlay();
             }
-        }, 120);
+        }, 150);
     }
 
     private void toast(String s) {
