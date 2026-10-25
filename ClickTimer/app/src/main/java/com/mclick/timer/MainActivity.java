@@ -4,45 +4,62 @@ import android.app.Activity;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.graphics.Color;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
-import android.text.InputType;
-import android.util.TypedValue;
-import android.view.Gravity;
-import android.view.ViewGroup;
+import android.text.TextUtils;
+import android.view.LayoutInflater;
+import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
+import android.widget.NumberPicker;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
 
-    private static final Pattern TIME_PATTERN =
-            Pattern.compile("^(\\d{1,2}):(\\d{1,2}):(\\d{1,2})(?:\\.(\\d{1,3}))?$");
-
-    private EditText timeInput;
-    private EditText offsetInput;
-    private TextView statusView;
     private SharedPreferences prefs;
+    private NumberPicker hourPicker;
+    private NumberPicker minutePicker;
+    private NumberPicker secondPicker;
+    private EditText msInput;
+    private EditText offsetInput;
+    private TextView statusText;
+    private TextView accessChip;
+    private TextView overlayButton;
+    private TextView startButtonRef;
+    private Button startButton;
+    private Button stopButton;
+    private Button overlayButtonReal;
+    private LinearLayout listContainer;
+    private TextView emptyHint;
+    private TextView listCount;
+    private View led;
 
+    private final List<String> times = new ArrayList<>();
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private boolean pendingArm;
     private final SimpleDateFormat fmt = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
+    private boolean pendingStart;
 
     private final Runnable ticker = new Runnable() {
         @Override
         public void run() {
+            if (pendingStart && isAccessibilityEnabled()
+                    && ClickAccessibilityService.getInstance() != null) {
+                pendingStart = false;
+                armFromList();
+            }
             refreshStatus();
             handler.postDelayed(this, 100);
         }
@@ -52,10 +69,13 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences(ClickAccessibilityService.PREF, MODE_PRIVATE);
-        setContentView(buildUi());
-
-        timeInput.setText(prefs.getString(ClickAccessibilityService.KEY_TIME_TEXT, "19:59:59.500"));
-        offsetInput.setText(String.valueOf(prefs.getInt(ClickAccessibilityService.KEY_OFFSET, 0)));
+        setContentView(R.layout.activity_main);
+        bindViews();
+        setupPickers();
+        loadTimes();
+        loadLastPicker();
+        renderList();
+        setupListeners();
     }
 
     @Override
@@ -63,11 +83,6 @@ public class MainActivity extends Activity {
         super.onResume();
         handler.removeCallbacks(ticker);
         handler.post(ticker);
-        if (pendingArm && isAccessibilityEnabled()
-                && ClickAccessibilityService.getInstance() != null) {
-            pendingArm = false;
-            startFromInputs();
-        }
     }
 
     @Override
@@ -76,161 +91,150 @@ public class MainActivity extends Activity {
         super.onPause();
     }
 
-    private LinearLayout buildUi() {
-        int pad = dp(22);
-        ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        scroll.setBackgroundColor(0xFFF5F5F5);
+    private void bindViews() {
+        hourPicker = findViewById(R.id.pick_hour);
+        minutePicker = findViewById(R.id.pick_minute);
+        secondPicker = findViewById(R.id.pick_second);
+        msInput = findViewById(R.id.ms_input);
+        offsetInput = findViewById(R.id.offset_input);
+        statusText = findViewById(R.id.status_text);
+        accessChip = findViewById(R.id.status_access);
+        led = findViewById(R.id.status_led);
+        listContainer = findViewById(R.id.list_container);
+        emptyHint = findViewById(R.id.empty_hint);
+        listCount = findViewById(R.id.list_count);
+        startButton = findViewById(R.id.start_button);
+        stopButton = findViewById(R.id.stop_button);
+        overlayButtonReal = findViewById(R.id.overlay_button);
+    }
 
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(pad, pad, pad, pad);
+    private void setupPickers() {
+        setupPicker(hourPicker, 23);
+        setupPicker(minutePicker, 59);
+        setupPicker(secondPicker, 59);
+    }
 
-        TextView title = new TextView(this);
-        title.setText("毫秒定时点击");
-        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 24f);
-        title.setTextColor(0xFF212121);
-        title.setTypeface(title.getTypeface(), android.graphics.Typeface.BOLD);
-        root.addView(title);
+    private void setupPicker(NumberPicker picker, int max) {
+        picker.setMinValue(0);
+        picker.setMaxValue(max);
+        picker.setWrapSelectorWheel(true);
+        picker.setFormatter(value -> String.format(Locale.US, "%02d", value));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            picker.setTextColor(0xFF3E3930);
+            picker.setTextSize(17f);
+        }
+    }
 
-        TextView desc = new TextView(this);
-        desc.setText("设定一个精确到毫秒的时间，点「启动悬浮按钮」，把准星拖到需要点击的位置。"
-                + "到达设定时间后，应用会在该位置自动点击一次。"
-                + "若时间已过，会自动顺延到明天同一时刻。");
-        desc.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
-        desc.setTextColor(0xFF616161);
-        desc.setLineSpacing(dp(3), 1f);
-        addWithTop(root, desc, dp(8));
+    private void loadLastPicker() {
+        int[] t = new int[4];
+        String last = prefs.getString(ClickAccessibilityService.KEY_TIME_TEXT, "19:59:59.500");
+        if (!ClickAccessibilityService.parseSpec(last, t)) {
+            t[0] = 19;
+            t[1] = 59;
+            t[2] = 59;
+            t[3] = 500;
+        }
+        hourPicker.setValue(t[0]);
+        minutePicker.setValue(t[1]);
+        secondPicker.setValue(t[2]);
+        msInput.setText(String.valueOf(t[3]));
+        msInput.setSelection(msInput.getText().length());
+        offsetInput.setText(String.valueOf(prefs.getInt(ClickAccessibilityService.KEY_OFFSET, 0)));
+    }
 
-        TextView label1 = smallLabel("触发时间（时:分:秒.毫秒）");
-        addWithTop(root, label1, dp(20));
+    private void loadTimes() {
+        times.clear();
+        LinkedHashSet<String> set = new LinkedHashSet<>();
+        String raw = prefs.getString(ClickAccessibilityService.KEY_TIMES, "");
+        int[] buf = new int[4];
+        if (!TextUtils.isEmpty(raw)) {
+            for (String s : raw.split(",")) {
+                String v = s.trim();
+                if (ClickAccessibilityService.parseSpec(v, buf)) {
+                    set.add(ClickAccessibilityService.formatSpec(buf[0], buf[1], buf[2], buf[3]));
+                }
+            }
+        }
+        times.addAll(set);
+        Collections.sort(times);
+    }
 
-        timeInput = new EditText(this);
-        timeInput.setSingleLine(true);
-        timeInput.setInputType(InputType.TYPE_CLASS_TEXT);
-        timeInput.setHint("例如 19:59:59.500");
-        timeInput.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f);
-        root.addView(timeInput, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+    private void saveTimes() {
+        prefs.edit().putString(ClickAccessibilityService.KEY_TIMES,
+                TextUtils.join(",", times)).apply();
+    }
 
-        TextView label2 = smallLabel("延迟补偿（毫秒，可填 0–2000）");
-        addWithTop(root, label2, dp(12));
-
-        offsetInput = new EditText(this);
-        offsetInput.setSingleLine(true);
-        offsetInput.setInputType(InputType.TYPE_CLASS_NUMBER);
-        offsetInput.setHint("0");
-        offsetInput.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f);
-        root.addView(offsetInput, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        TextView offsetTip = new TextView(this);
-        offsetTip.setText("系统注入点击本身有少量延迟。如果实测总是偏晚，可把补偿填成实测偏晚的毫秒数，"
-                + "应用会提前相应时间执行。默认 0。");
-        offsetTip.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        offsetTip.setTextColor(0xFF9E9E9E);
-        addWithTop(root, offsetTip, dp(4));
-
-        Button start = new Button(this);
-        start.setText("启动悬浮按钮");
-        start.setAllCaps(false);
-        start.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f);
-        addWithTop(root, start, dp(22));
-        start.setOnClickListener(v -> startFromInputs());
-
-        Button hide = new Button(this);
-        hide.setText("停止 / 隐藏悬浮按钮");
-        hide.setAllCaps(false);
-        addWithTop(root, hide, dp(8));
-        hide.setOnClickListener(v -> {
+    private void setupListeners() {
+        findViewById(R.id.add_button).setOnClickListener(v -> addTime());
+        startButton.setOnClickListener(v -> armFromList());
+        stopButton.setOnClickListener(v -> {
             ClickAccessibilityService svc = ClickAccessibilityService.getInstance();
             if (svc != null) {
-                svc.disarm();
-            } else {
-                prefs.edit().putBoolean(ClickAccessibilityService.KEY_ARMED, false).apply();
+                svc.stopArm();
             }
+            toast("已停止执行，悬浮按钮保留，可再次启动");
             refreshStatus();
-            toast("已停止");
         });
-
-        Button open = new Button(this);
-        open.setText("打开无障碍服务设置");
-        open.setAllCaps(false);
-        addWithTop(root, open, dp(8));
-        open.setOnClickListener(v -> openAccessibilitySettings());
-
-        statusView = new TextView(this);
-        statusView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
-        statusView.setTextColor(0xFF212121);
-        statusView.setPadding(dp(12), dp(10), dp(12), dp(10));
-        statusView.setBackgroundColor(0xFFE8E8E8);
-        addWithTop(root, statusView, dp(20));
-
-        TextView help = new TextView(this);
-        help.setText("使用步骤：\n"
-                + "1. 点击「打开无障碍服务设置」，找到「毫秒定时点击」并开启。\n"
-                + "2. 回到本页，填写时间与补偿，点「启动悬浮按钮」。\n"
-                + "3. 把悬浮准星拖到目标位置，保持页面/应用处于要点击的状态。\n"
-                + "4. 到点自动点击一次，悬浮按钮会自动恢复。\n\n"
-                + "说明：本应用不联网、不读取屏幕内容，APK 体积很小。"
-                + "部分系统（Android 13+）如果提示「受限制的设置」，"
-                + "需先在系统「应用信息」里允许受限设置，再回来开启无障碍。");
-        help.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
-        help.setTextColor(0xFF757575);
-        help.setLineSpacing(dp(3), 1f);
-        addWithTop(root, help, dp(16));
-
-        scroll.addView(root);
-        LinearLayout wrapper = new LinearLayout(this);
-        wrapper.addView(scroll, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        return wrapper;
+        overlayButtonReal.setOnClickListener(v -> toggleOverlay());
+        accessChip.setOnClickListener(v -> openAccessibilitySettings());
     }
 
-    private TextView smallLabel(String text) {
-        TextView tv = new TextView(this);
-        tv.setText(text);
-        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
-        tv.setTextColor(0xFF424242);
-        return tv;
-    }
-
-    private void addWithTop(LinearLayout parent, android.view.View v, int topMargin) {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = topMargin;
-        parent.addView(v, lp);
-    }
-
-    private int dp(int v) {
-        return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
-    }
-
-    private void startFromInputs() {
-        String raw = timeInput.getText().toString().trim();
-        Matcher m = TIME_PATTERN.matcher(raw);
-        if (!m.matches()) {
-            toast("时间格式应为 时:分:秒.毫秒，例如 19:59:59.500");
+    private void addTime() {
+        int ms = parseMilliseconds();
+        if (ms < 0) {
             return;
         }
-        int hour = Integer.parseInt(m.group(1));
-        int minute = Integer.parseInt(m.group(2));
-        int second = Integer.parseInt(m.group(3));
-        if (hour > 23 || minute > 59 || second > 59) {
-            toast("小时需 0–23，分钟/秒需 0–59");
+        String spec = ClickAccessibilityService.formatSpec(
+                hourPicker.getValue(), minutePicker.getValue(), secondPicker.getValue(), ms);
+        if (times.contains(spec)) {
+            toast("这个时间已经在列表里了");
             return;
         }
-        String frac = m.group(4);
-        int millis = 0;
-        if (frac != null) {
-            while (frac.length() < 3) {
-                frac = frac + "0";
+        if (times.size() >= 30) {
+            toast("最多保存 30 个时间");
+            return;
+        }
+        times.add(spec);
+        Collections.sort(times);
+        saveTimes();
+        prefs.edit().putString(ClickAccessibilityService.KEY_TIME_TEXT, spec).apply();
+        if (ClickAccessibilityService.armed) {
+            ClickAccessibilityService svc = ClickAccessibilityService.getInstance();
+            if (svc != null) {
+                svc.stopArm();
             }
-            millis = Integer.parseInt(frac);
+            toast("已保存并停止当前执行，请重新点「启动定时点击」");
+        } else {
+            toast("已保存：" + spec);
         }
+        renderList();
+        refreshStatus();
+        hideKeyboard();
+    }
+
+    private int parseMilliseconds() {
+        String s = msInput.getText().toString().trim();
+        if (s.isEmpty()) {
+            return 0;
+        }
+        int ms;
+        try {
+            ms = Integer.parseInt(s);
+        } catch (NumberFormatException e) {
+            toast("毫秒请填 0–999 的数字");
+            return -1;
+        }
+        if (ms < 0 || ms > 999) {
+            toast("毫秒请填 0–999 的数字");
+            return -1;
+        }
+        return ms;
+    }
+
+    private int parseOffset() {
+        String s = offsetInput.getText().toString().trim();
         int offset;
         try {
-            String s = offsetInput.getText().toString().trim();
             offset = s.isEmpty() ? 0 : Integer.parseInt(s);
         } catch (NumberFormatException e) {
             offset = 0;
@@ -242,25 +246,128 @@ public class MainActivity extends Activity {
             offset = 2000;
             offsetInput.setText("2000");
         }
+        return offset;
+    }
 
+    private void renderList() {
+        listContainer.removeAllViews();
+        emptyHint.setVisibility(times.isEmpty() ? View.VISIBLE : View.GONE);
+        listCount.setText(times.size() + " 个");
+        LayoutInflater inflater = LayoutInflater.from(this);
+        for (String spec : new ArrayList<>(times)) {
+            View row = inflater.inflate(R.layout.item_time, listContainer, false);
+            ((TextView) row.findViewById(R.id.item_time)).setText(spec);
+            row.findViewById(R.id.item_delete).setOnClickListener(v -> {
+                times.remove(spec);
+                saveTimes();
+                boolean wasArmed = ClickAccessibilityService.armed;
+                if (wasArmed) {
+                    ClickAccessibilityService svc = ClickAccessibilityService.getInstance();
+                    if (svc != null) {
+                        svc.stopArm();
+                    }
+                }
+                renderList();
+                refreshStatus();
+                toast(wasArmed ? "已删除并停止执行，请重新启动" : "已删除 " + spec);
+            });
+            listContainer.addView(row);
+        }
+    }
+
+    private void armFromList() {
+        if (times.isEmpty()) {
+            toast("请先保存至少一个时间");
+            return;
+        }
+        int ms = parseMilliseconds();
+        if (ms < 0) {
+            return;
+        }
+        String spec = ClickAccessibilityService.formatSpec(
+                hourPicker.getValue(), minutePicker.getValue(), secondPicker.getValue(), ms);
         prefs.edit()
-                .putString(ClickAccessibilityService.KEY_TIME_TEXT, raw)
-                .putInt(ClickAccessibilityService.KEY_OFFSET, offset)
+                .putString(ClickAccessibilityService.KEY_TIME_TEXT, spec)
+                .putInt(ClickAccessibilityService.KEY_OFFSET, parseOffset())
                 .apply();
 
         if (!isAccessibilityEnabled()) {
-            pendingArm = true;
+            pendingStart = true;
             toast("请先开启「毫秒定时点击」的无障碍服务");
             openAccessibilitySettings();
             return;
         }
         ClickAccessibilityService svc = ClickAccessibilityService.getInstance();
         if (svc == null) {
-            toast("无障碍服务正在启动，请稍等再点一次");
+            pendingStart = true;
+            toast("无障碍服务正在连接，请稍候…");
             return;
         }
-        svc.arm(hour, minute, second, millis, offset);
+        pendingStart = false;
+        svc.armAll(new ArrayList<>(times), parseOffset());
         refreshStatus();
+    }
+
+    private void toggleOverlay() {
+        if (!isAccessibilityEnabled()) {
+            toast("请先开启无障碍服务");
+            openAccessibilitySettings();
+            return;
+        }
+        ClickAccessibilityService svc = ClickAccessibilityService.getInstance();
+        if (svc == null) {
+            toast("无障碍服务正在连接，请稍候再试");
+            return;
+        }
+        if (ClickAccessibilityService.overlayShown) {
+            boolean wasArmed = ClickAccessibilityService.armed;
+            svc.hideOverlay();
+            toast(wasArmed ? "已停止执行并隐藏悬浮按钮" : "已隐藏悬浮按钮");
+        } else {
+            svc.showOverlayOnly();
+            toast("拖动准星到目标位置后，点「启动定时点击」");
+        }
+        refreshStatus();
+    }
+
+    private void refreshStatus() {
+        boolean enabled = isAccessibilityEnabled();
+        boolean armed = ClickAccessibilityService.armed;
+        boolean shown = ClickAccessibilityService.overlayShown;
+        long next = ClickAccessibilityService.targetWallMs;
+        int remaining = ClickAccessibilityService.remainingCount;
+        long now = System.currentTimeMillis();
+
+        if (armed && next > now) {
+            long rem = next - now;
+            statusText.setText("已启动 · 剩 " + remaining + " 个 · "
+                    + fmt.format(new Date(next)) + " · "
+                    + (rem / 1000) + "." + String.format(Locale.US, "%03d", rem % 1000) + "s");
+            led.setBackgroundResource(R.drawable.led_on);
+        } else if (armed) {
+            statusText.setText("正在执行点击…");
+            led.setBackgroundResource(R.drawable.led_on);
+        } else if (shown) {
+            long last = ClickAccessibilityService.lastFireWallMs;
+            if (last > 0 && now - last < 60000L) {
+                statusText.setText("已执行 " + fmt.format(new Date(last))
+                        + " · 悬浮按钮待启动");
+            } else {
+                statusText.setText("悬浮按钮已显示 · 拖到目标位置后点「启动」");
+            }
+            led.setBackgroundResource(R.drawable.led_wait);
+        } else if (!enabled) {
+            statusText.setText("无障碍未开启，无法执行");
+            led.setBackgroundResource(R.drawable.led_off);
+        } else {
+            statusText.setText("待启动 · 保存时间后点「启动定时点击」");
+            led.setBackgroundResource(R.drawable.led_off);
+        }
+
+        accessChip.setText(enabled ? "无障碍 已开启" : "去开启无障碍");
+        overlayButtonReal.setText(shown ? "隐藏悬浮按钮" : "显示悬浮按钮");
+        stopButton.setVisibility(armed ? View.VISIBLE : View.GONE);
+        startButton.setText(armed ? "重新启动" : "启动定时点击");
     }
 
     private boolean isAccessibilityEnabled() {
@@ -270,7 +377,8 @@ public class MainActivity extends Activity {
             return false;
         }
         ComponentName cn = new ComponentName(this, ClickAccessibilityService.class);
-        return enabled.contains(cn.flattenToString()) || enabled.contains(cn.flattenToShortString());
+        return enabled.contains(cn.flattenToString())
+                || enabled.contains(cn.flattenToShortString());
     }
 
     private void openAccessibilitySettings() {
@@ -281,29 +389,15 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void refreshStatus() {
-        if (statusView == null) {
-            return;
-        }
-        ClickAccessibilityService svc = ClickAccessibilityService.getInstance();
-        long now = System.currentTimeMillis();
-        if (ClickAccessibilityService.armed && ClickAccessibilityService.targetWallMs > now) {
-            long rem = ClickAccessibilityService.targetWallMs - now;
-            String when = rem < 86400000L ? "今天" : "明天";
-            statusView.setText("● 已启动｜" + when + " "
-                    + fmt.format(new Date(ClickAccessibilityService.targetWallMs))
-                    + "｜剩余 " + (rem / 1000) + "."
-                    + String.format(Locale.US, "%03d", rem % 1000) + " 秒");
-        } else if (ClickAccessibilityService.lastFireWallMs > 0
-                && now - ClickAccessibilityService.lastFireWallMs < 60000L) {
-            statusView.setText("● 已执行点击｜"
-                    + fmt.format(new Date(ClickAccessibilityService.lastFireWallMs)));
-        } else if (!isAccessibilityEnabled()) {
-            statusView.setText("① 未开启无障碍服务，请先点下方按钮开启");
-        } else if (svc == null) {
-            statusView.setText("② 无障碍已开启，正在等待服务连接…");
-        } else {
-            statusView.setText("② 无障碍已开启，设置时间后点「启动悬浮按钮」");
+    private void hideKeyboard() {
+        try {
+            android.view.inputmethod.InputMethodManager imm =
+                    (android.view.inputmethod.InputMethodManager)
+                            getSystemService(INPUT_METHOD_SERVICE);
+            if (imm != null && getCurrentFocus() != null) {
+                imm.hideSoftInputFromWindow(getCurrentFocus().getWindowToken(), 0);
+            }
+        } catch (Throwable ignored) {
         }
     }
 
