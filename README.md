@@ -103,7 +103,7 @@ ANDROID_SDK_ROOT=/path/to/android-sdk ./build.sh
 ## 项目结构
 
 ```
-ClickTimer/
+.
 ├── app/src/main/
 │   ├── AndroidManifest.xml
 │   ├── java/com/mclick/timer/
