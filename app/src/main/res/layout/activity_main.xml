@@ -389,7 +389,7 @@
             android:paddingTop="12dp"
             android:paddingEnd="14dp"
             android:paddingBottom="12dp"
-            android:text="后台总被清理？点此打开应用设置，允许自启动并设为「不限制耗电」"
+            android:text="后台总被清理？点此打开应用设置，授予自启动权限并设为「不限制耗电」。本应用是一次性任务，不会自启动；要这个权限只是为了防止被杀后无障碍授权被收回、又要重来一次。"
             android:textColor="#66855A"
             android:textSize="12sp" />
 
