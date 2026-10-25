@@ -140,7 +140,6 @@ public class ClickAccessibilityService extends AccessibilityService {
         super.onServiceConnected();
         sInstance = this;
         wm = (WindowManager) getSystemService(Context.WINDOW_SERVICE);
-        KeepAliveService.start(this);
 
         SharedPreferences sp = getSharedPreferences(PREF, MODE_PRIVATE);
         offsetMs = sp.getInt(KEY_OFFSET, 0);
@@ -202,7 +201,6 @@ public class ClickAccessibilityService extends AccessibilityService {
                 .putBoolean(KEY_ARMED, false)
                 .putBoolean(KEY_OVERLAY, false)
                 .apply();
-        KeepAliveService.stop(this);
     }
 
     // ---------------- 对外控制 ----------------

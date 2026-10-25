@@ -79,9 +79,6 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        if (isAccessibilityEnabled()) {
-            KeepAliveService.start(this);
-        }
         handler.removeCallbacks(ticker);
         refreshStatus();
     }
