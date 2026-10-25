@@ -26,8 +26,8 @@ mkdir -p build/gen build/classes build/dex signing
     --java build/gen \
     --min-sdk-version 24 \
     --target-sdk-version 34 \
-    --version-code 2 \
-    --version-name 1.1 \
+    --version-code 3 \
+    --version-name 1.2 \
     build/res.zip
 
 find app/src/main/java build/gen -name '*.java' > build/sources.txt

@@ -4,7 +4,6 @@ import android.app.Activity;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -15,7 +14,7 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
-import android.widget.NumberPicker;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -30,20 +29,20 @@ import java.util.Locale;
 public class MainActivity extends Activity {
 
     private SharedPreferences prefs;
-    private NumberPicker hourPicker;
-    private NumberPicker minutePicker;
-    private NumberPicker secondPicker;
+    private WheelView hourWheel;
+    private WheelView minuteWheel;
+    private WheelView secondWheel;
     private EditText msInput;
     private EditText offsetInput;
-    private TextView statusText;
-    private TextView accessChip;
+    private Button statusButton;
     private Button overlayButton;
     private Button startButton;
-    private Button stopButton;
     private LinearLayout listContainer;
     private TextView emptyHint;
     private TextView listCount;
-    private View led;
+    private ScrollView scroll;
+    private View timeCard;
+    private View listCard;
 
     private final List<String> times = new ArrayList<>();
     private String selectedSpec = "";
@@ -91,37 +90,26 @@ public class MainActivity extends Activity {
     }
 
     private void bindViews() {
-        hourPicker = findViewById(R.id.pick_hour);
-        minutePicker = findViewById(R.id.pick_minute);
-        secondPicker = findViewById(R.id.pick_second);
+        hourWheel = findViewById(R.id.pick_hour);
+        minuteWheel = findViewById(R.id.pick_minute);
+        secondWheel = findViewById(R.id.pick_second);
         msInput = findViewById(R.id.ms_input);
         offsetInput = findViewById(R.id.offset_input);
-        statusText = findViewById(R.id.status_text);
-        accessChip = findViewById(R.id.status_access);
-        led = findViewById(R.id.status_led);
+        statusButton = findViewById(R.id.status_button);
         listContainer = findViewById(R.id.list_container);
         emptyHint = findViewById(R.id.empty_hint);
         listCount = findViewById(R.id.list_count);
         startButton = findViewById(R.id.start_button);
-        stopButton = findViewById(R.id.stop_button);
         overlayButton = findViewById(R.id.overlay_button);
+        scroll = findViewById(R.id.scroll);
+        timeCard = findViewById(R.id.time_card);
+        listCard = findViewById(R.id.list_card);
     }
 
     private void setupPickers() {
-        setupPicker(hourPicker, 23);
-        setupPicker(minutePicker, 59);
-        setupPicker(secondPicker, 59);
-    }
-
-    private void setupPicker(NumberPicker picker, int max) {
-        picker.setMinValue(0);
-        picker.setMaxValue(max);
-        picker.setWrapSelectorWheel(true);
-        picker.setFormatter(value -> String.format(Locale.US, "%02d", value));
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            picker.setTextColor(0xFF3E3930);
-            picker.setTextSize(17f);
-        }
+        hourWheel.setRange(0, 23);
+        minuteWheel.setRange(0, 59);
+        secondWheel.setRange(0, 59);
     }
 
     private void loadTimes() {
@@ -165,9 +153,9 @@ public class MainActivity extends Activity {
     }
 
     private void applyToPickers(int h, int m, int s, int ms) {
-        hourPicker.setValue(h);
-        minutePicker.setValue(m);
-        secondPicker.setValue(s);
+        hourWheel.setValue(h);
+        minuteWheel.setValue(m);
+        secondWheel.setValue(s);
         msInput.setText(String.valueOf(ms));
         msInput.setSelection(msInput.getText().length());
     }
@@ -189,16 +177,16 @@ public class MainActivity extends Activity {
     private void setupListeners() {
         findViewById(R.id.add_button).setOnClickListener(v -> addTime());
         startButton.setOnClickListener(v -> startSelected());
-        stopButton.setOnClickListener(v -> {
-            ClickAccessibilityService svc = ClickAccessibilityService.getInstance();
-            if (svc != null) {
-                svc.stopArm();
-            }
-            toast("已停止执行，悬浮按钮保留，可再次启动");
-            refreshStatus();
-        });
         overlayButton.setOnClickListener(v -> toggleOverlay());
-        accessChip.setOnClickListener(v -> openAccessibilitySettings());
+        statusButton.setOnClickListener(v -> {
+            if (!isAccessibilityEnabled()) {
+                openAccessibilitySettings();
+            } else if (times.isEmpty()) {
+                scrollTo(timeCard);
+            } else {
+                scrollTo(listCard);
+            }
+        });
     }
 
     private void addTime() {
@@ -207,7 +195,7 @@ public class MainActivity extends Activity {
             return;
         }
         String spec = ClickAccessibilityService.formatSpec(
-                hourPicker.getValue(), minutePicker.getValue(), secondPicker.getValue(), ms);
+                hourWheel.getValue(), minuteWheel.getValue(), secondWheel.getValue(), ms);
         if (times.contains(spec)) {
             toast("这个时间已经在列表里了，已直接选中");
             selectTime(spec, true);
@@ -406,38 +394,66 @@ public class MainActivity extends Activity {
         long next = ClickAccessibilityService.targetWallMs;
         long now = System.currentTimeMillis();
 
+        String text;
+        int bg;
+        int color;
         if (armed && next > now) {
             long rem = next - now;
-            statusText.setText("已启动 · " + fmt.format(new Date(next)) + " · "
-                    + (rem / 1000) + "." + String.format(Locale.US, "%03d", rem % 1000) + "s");
-            led.setBackgroundResource(R.drawable.led_on);
+            text = "已启动 · " + fmt.format(new Date(next)) + " · "
+                    + (rem / 1000) + "." + String.format(Locale.US, "%03d", rem % 1000) + "s";
+            bg = R.drawable.bg_pill_selected;
+            color = 0xFF66855A;
         } else if (armed) {
-            statusText.setText("正在执行点击…");
-            led.setBackgroundResource(R.drawable.led_on);
+            text = "正在执行点击…";
+            bg = R.drawable.bg_pill_selected;
+            color = 0xFF66855A;
         } else if (!enabled) {
-            statusText.setText("无障碍未开启，无法执行");
-            led.setBackgroundResource(R.drawable.led_off);
+            text = "无障碍未开启 · 点此去开启";
+            bg = R.drawable.bg_btn_ghost;
+            color = 0xFFB3564E;
         } else if (selectedSpec.isEmpty()) {
-            statusText.setText("待启动 · 保存并选中一个时间");
-            led.setBackgroundResource(R.drawable.led_off);
+            text = "待启动 · 保存并选中一个时间";
+            bg = R.drawable.bg_btn_ghost;
+            color = 0xFF3E3930;
         } else if (shown) {
             long last = ClickAccessibilityService.lastFireWallMs;
             if (last > 0 && now - last < 60000L) {
-                statusText.setText("已执行 " + fmt.format(new Date(last))
-                        + " · 已选中 " + selectedSpec);
+                text = "已执行 " + fmt.format(new Date(last)) + " · 再点启动可执行选中时间";
             } else {
-                statusText.setText("悬浮按钮已显示 · 已选中 " + selectedSpec + " · 点启动");
+                text = "待启动 · 已选中 " + selectedSpec + " · 悬浮按钮已显示";
             }
-            led.setBackgroundResource(R.drawable.led_wait);
+            bg = R.drawable.bg_btn_ghost;
+            color = 0xFF3E3930;
         } else {
-            statusText.setText("待启动 · 已选中 " + selectedSpec + " · 点「启动」执行");
-            led.setBackgroundResource(R.drawable.led_off);
+            text = "待启动 · 已选中 " + selectedSpec + " · 点「启动」执行";
+            bg = R.drawable.bg_btn_ghost;
+            color = 0xFF3E3930;
         }
+        if (!text.contentEquals(statusButton.getText())) {
+            statusButton.setText(text);
+        }
+        if (!Integer.valueOf(bg).equals(statusButton.getTag())) {
+            statusButton.setBackgroundResource(bg);
+            statusButton.setTag(bg);
+        }
+        if (statusButton.getCurrentTextColor() != color) {
+            statusButton.setTextColor(color);
+        }
+        String overlayText = shown ? "隐藏悬浮按钮" : "显示悬浮按钮";
+        if (!overlayText.contentEquals(overlayButton.getText())) {
+            overlayButton.setText(overlayText);
+        }
+    }
 
-        accessChip.setText(enabled ? "无障碍 已开启" : "去开启无障碍");
-        overlayButton.setText(shown ? "隐藏悬浮按钮" : "显示悬浮按钮");
-        stopButton.setVisibility(armed ? View.VISIBLE : View.GONE);
-        startButton.setText(armed ? "重新启动" : "启动选中时间");
+    private void scrollTo(View target) {
+        if (target == null || scroll == null) {
+            return;
+        }
+        scroll.smoothScrollTo(0, Math.max(0, target.getTop() - dp(8)));
+    }
+
+    private int dp(int v) {
+        return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
     }
 
     private boolean isAccessibilityEnabled() {
