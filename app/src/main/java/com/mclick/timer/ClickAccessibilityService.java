@@ -9,7 +9,9 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
+import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -19,6 +21,7 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
+import android.view.WindowMetrics;
 import android.view.accessibility.AccessibilityEvent;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -320,6 +323,24 @@ public class ClickAccessibilityService extends AccessibilityService {
         return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
     }
 
+    /**
+     * 悬浮窗坐标以整块屏幕为基准（FLAG_LAYOUT_NO_LIMITS），
+     * 所以边界要用真实屏幕尺寸，不能用会扣掉状态栏/导航栏的 heightPixels。
+     */
+    private int[] screenSize() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && wm != null) {
+            Rect b = wm.getCurrentWindowMetrics().getBounds();
+            return new int[]{b.width(), b.height()};
+        }
+        DisplayMetrics dm = new DisplayMetrics();
+        if (wm != null) {
+            wm.getDefaultDisplay().getRealMetrics(dm);
+            return new int[]{dm.widthPixels, dm.heightPixels};
+        }
+        dm = getResources().getDisplayMetrics();
+        return new int[]{dm.widthPixels, dm.heightPixels};
+    }
+
     private void buildOverlay() {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
@@ -342,11 +363,11 @@ public class ClickAccessibilityService extends AccessibilityService {
         params.gravity = Gravity.TOP | Gravity.START;
 
         SharedPreferences sp = getSharedPreferences(PREF, MODE_PRIVATE);
-        DisplayMetrics dm = getResources().getDisplayMetrics();
-        params.x = Math.max(0, Math.min(sp.getInt(KEY_X, dm.widthPixels / 2 - dp(16)),
-                dm.widthPixels - dp(32)));
-        params.y = Math.max(0, Math.min(sp.getInt(KEY_Y, dm.heightPixels / 2 - dp(16)),
-                dm.heightPixels - dp(32)));
+        int[] sz = screenSize();
+        params.x = Math.max(0, Math.min(sp.getInt(KEY_X, sz[0] / 2 - dp(16)),
+                Math.max(0, sz[0] - dp(32))));
+        params.y = Math.max(0, Math.min(sp.getInt(KEY_Y, sz[1] / 2 - dp(16)),
+                Math.max(0, sz[1] - dp(32))));
 
         box.setOnTouchListener(new View.OnTouchListener() {
             private float downRawX, downRawY;
@@ -370,9 +391,9 @@ public class ClickAccessibilityService extends AccessibilityService {
                             moved = true;
                         }
                         if (moved) {
-                            DisplayMetrics d = getResources().getDisplayMetrics();
-                            int maxX = Math.max(0, d.widthPixels - v.getWidth());
-                            int maxY = Math.max(0, d.heightPixels - v.getHeight());
+                            int[] d = screenSize();
+                            int maxX = Math.max(0, d[0] - v.getWidth());
+                            int maxY = Math.max(0, d[1] - v.getHeight());
                             params.x = Math.max(0, Math.min(maxX, downX + (int) dx));
                             params.y = Math.max(0, Math.min(maxY, downY + (int) dy));
                             try {
