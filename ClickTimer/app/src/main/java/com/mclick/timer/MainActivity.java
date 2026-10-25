@@ -59,7 +59,6 @@ public class MainActivity extends Activity {
                 startSelected();
             }
             refreshStatus();
-            handler.postDelayed(this, 100);
         }
     };
 
@@ -80,7 +79,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         handler.removeCallbacks(ticker);
-        handler.post(ticker);
+        refreshStatus();
     }
 
     @Override
@@ -442,6 +441,23 @@ public class MainActivity extends Activity {
         String overlayText = shown ? "隐藏悬浮按钮" : "显示悬浮按钮";
         if (!overlayText.contentEquals(overlayButton.getText())) {
             overlayButton.setText(overlayText);
+        }
+
+        // 只在等待执行或等待服务连接时刷新，空闲时完全停止轮询以省电
+        handler.removeCallbacks(ticker);
+        if (armed || pendingStart) {
+            long rem = next - now;
+            long delay;
+            if (!armed) {
+                delay = 500L;
+            } else if (rem > 60_000L) {
+                delay = 1000L;
+            } else if (rem > 10_000L) {
+                delay = 500L;
+            } else {
+                delay = 250L;
+            }
+            handler.postDelayed(ticker, delay);
         }
     }
 

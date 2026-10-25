@@ -438,7 +438,20 @@ public class ClickAccessibilityService extends AccessibilityService {
                 return;
             }
             updateLabel();
-            main.postDelayed(this, 60);
+            long rem = targetWallMs - System.currentTimeMillis();
+            long delay;
+            if (rem > 300_000L) {
+                delay = 5000L;
+            } else if (rem > 60_000L) {
+                delay = 1000L;
+            } else if (rem > 10_000L) {
+                delay = 250L;
+            } else if (rem > 1_000L) {
+                delay = 100L;
+            } else {
+                delay = 50L;
+            }
+            main.postDelayed(this, delay);
         }
     };
 
@@ -525,6 +538,7 @@ public class ClickAccessibilityService extends AccessibilityService {
         armed = false;
         targetWallMs = 0L;
         lastFireWallMs = System.currentTimeMillis();
+        main.removeCallbacks(tick);
         getSharedPreferences(PREF, MODE_PRIVATE).edit()
                 .putBoolean(KEY_ARMED, false).apply();
 
