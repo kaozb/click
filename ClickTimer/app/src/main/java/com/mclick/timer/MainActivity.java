@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -78,6 +79,9 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        if (isAccessibilityEnabled()) {
+            KeepAliveService.start(this);
+        }
         handler.removeCallbacks(ticker);
         refreshStatus();
     }
@@ -175,8 +179,27 @@ public class MainActivity extends Activity {
 
     private void setupListeners() {
         findViewById(R.id.add_button).setOnClickListener(v -> addTime());
-        startButton.setOnClickListener(v -> startSelected());
+        startButton.setOnClickListener(v -> {
+            if (ClickAccessibilityService.armed) {
+                ClickAccessibilityService svc = ClickAccessibilityService.getInstance();
+                if (svc != null) {
+                    svc.stopArm();
+                }
+                toast("已结束本次任务，可重新选择时间启动");
+                refreshStatus();
+            } else {
+                startSelected();
+            }
+        });
         overlayButton.setOnClickListener(v -> toggleOverlay());
+        findViewById(R.id.battery_button).setOnClickListener(v -> {
+            try {
+                startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:" + getPackageName())));
+            } catch (Throwable e) {
+                openAccessibilitySettings();
+            }
+        });
         statusButton.setOnClickListener(v -> {
             if (!isAccessibilityEnabled()) {
                 openAccessibilitySettings();
@@ -437,6 +460,19 @@ public class MainActivity extends Activity {
         }
         if (statusButton.getCurrentTextColor() != color) {
             statusButton.setTextColor(color);
+        }
+        String startText = armed ? "结束任务" : "启动选中时间";
+        if (!startText.contentEquals(startButton.getText())) {
+            startButton.setText(startText);
+        }
+        int startBg = armed ? R.drawable.bg_btn_ghost : R.drawable.bg_btn_accent;
+        int startColor = armed ? 0xFFB3564E : 0xFFFFFFFF;
+        if (!Integer.valueOf(startBg).equals(startButton.getTag())) {
+            startButton.setBackgroundResource(startBg);
+            startButton.setTag(startBg);
+        }
+        if (startButton.getCurrentTextColor() != startColor) {
+            startButton.setTextColor(startColor);
         }
         String overlayText = shown ? "隐藏悬浮按钮" : "显示悬浮按钮";
         if (!overlayText.contentEquals(overlayButton.getText())) {
