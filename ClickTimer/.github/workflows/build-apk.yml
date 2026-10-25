@@ -1,0 +1,108 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # 不使用 android-actions/setup-android：它会安装已下架的 "tools" 包。
+      # 直接复用 runner 预装的 SDK，缺组件时用 sdkmanager 补齐。
+      - name: Locate Android SDK
+        run: |
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "使用 SDK: $SDK"
+          ls "$SDK/build-tools" 2>/dev/null || true
+          ls "$SDK/platforms" 2>/dev/null || true
+
+      - name: Ensure SDK components
+        run: |
+          if [ -x "$ANDROID_SDK_ROOT/build-tools/34.0.0/aapt2" ] \
+             && [ -f "$ANDROID_SDK_ROOT/platforms/android-34/android.jar" ]; then
+            echo "build-tools 34.0.0 与 platform 34 已就绪"
+            exit 0
+          fi
+          SDKMGR="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$SDKMGR" ] || SDKMGR="$(command -v sdkmanager)"
+          yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
+          "$SDKMGR" --install "platforms;android-34" "build-tools;34.0.0"
+
+      # 默认使用仓库内的 signing/release.jks，保证 CI 与本地签名一致、可覆盖安装。
+      # 若仓库公开，请删除该文件并配置 Secrets：KEYSTORE_BASE64。
+      - name: Prepare signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "${KEYSTORE_BASE64:-}" ]; then
+            mkdir -p signing
+            printf '%s' "$KEYSTORE_BASE64" | base64 -d > signing/release.jks
+            echo "使用 Secrets 中的签名密钥"
+          elif [ -f signing/release.jks ]; then
+            echo "使用仓库内的 signing/release.jks"
+          else
+            echo "未提供签名密钥，本次将生成新密钥（注意：无法覆盖安装旧版本）"
+          fi
+
+      - name: Build APK
+        run: |
+          chmod +x build.sh
+          ./build.sh
+          ls -l ClickTimer.apk
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClickTimer-apk
+          path: ClickTimer.apk
+          if-no-files-found: error
+
+      # 推送 v* 标签：生成对应正式 Release
+      - name: Publish release (tag)
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: 毫秒定时点击 ${{ github.ref_name }}
+          files: ClickTimer.apk
+          body: |
+            自动构建产物，提交 `${{ github.sha }}`。
+
+            下载 `ClickTimer.apk` 覆盖安装即可（与历史版本使用同一签名，可直接升级）。
+          prerelease: false
+
+      # 推送 main：维护滚动预发布 latest-build，同名资产自动覆盖
+      - name: Publish release (branch)
+        if: github.ref_type == 'branch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-build
+          name: 最新构建（main）
+          target_commitish: ${{ github.sha }}
+          files: ClickTimer.apk
+          body: |
+            `main` 分支最新自动构建，提交 `${{ github.sha }}`。
+
+            下载 `ClickTimer.apk` 覆盖安装即可（与历史版本使用同一签名，可直接升级）。
+          prerelease: true
