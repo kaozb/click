@@ -1,0 +1,78 @@
+! Title: 红果免费短剧 广告域名拦截 (com.phoenix.read 7.1.1.32)
+! Description: 由静态分析从 APK 中提取的广告域名。A 区=广告专用核心域名；B 区=承载广告流量的归因/监控/激励域名。
+! Version: 1.0
+! Last modified: 2026-10-29
+! Expires: 30 days
+! Homepage: (local)
+! License: 自用
+! 注意：B 区域名同时承载业务数据上报，全部拦截可能影响统计与金币任务，请按需启用。
+! 说明：静态分析无法覆盖运行时下发的落地页与广告主域名，需动态抓包补全。
+!
+! ============================================================
+! A 区：广告专用核心域名（可全部启用）
+! ============================================================
+||ad.zijieapi.com^$important
+||ib.snssdk.com^$important
+||clue.oceanengine.com^$important
+||scc.bytedance.com^$important
+||aweme.snssdk.com^$important
+||www.chengzijianzhan.com^$important
+||apps.bytesfield.com^$important
+||apps.bytesfield-b.com^$important
+||hapjs.org^$important
+||vod-urls.bytedanceapi.com^$important
+||lf-sourcecdn-tos.bytegecko.com^$important
+||lf-dy-sourcecdn-tos.bytegecko.com^$important
+||zlink.ugsdk.cn^$important
+||link.wtturl.cn^$important
+||effect.snssdk.com^$important
+||apps.samsung.com^$important
+!
+! ============================================================
+! B 区：广告链路 / 归因 / 监控域名（谨慎启用，可能影响业务功能）
+! 需要时把每行开头的 "!" 删除即可启用
+! ============================================================
+!||polaris.zijieapi.com^$important
+!||i.snssdk.com^$important
+!||mon.zijieapi.com^$important
+!||mon.snssdk.com^$important
+!||monsetting.toutiao.com^$important
+!||is.snssdk.com^$important
+!||zlink.toutiao.com^$important
+!||dig.bdurl.net^$important
+!||dig.zjurl.cn^$important
+!||m.toutiao.com^$important
+!||open.douyin.com^$important
+!||open-client.douyin.com^$important
+!
+! ============================================================
+! 仅供查阅的完整 URL（非规则，不生效）
+! ============================================================
+! https://ad.zijieapi.com/api/ad/v1/banner/
+! https://ad.zijieapi.com/api/ad/v1/dislike/
+! https://ad.zijieapi.com/api/ad/v1/dislike/filterwords/
+! https://ad.zijieapi.com/api/ad/v1/report/feedback/
+! https://ad.zijieapi.com/api/ad/v1/report/
+! https://ad.zijieapi.com/api/ad/v1/inspire_send/
+! https://ad.zijieapi.com/api/incentive/marketing/done
+! https://ib.snssdk.com/luckycat/novel/v1/task/excitation_ad_read/detail
+! https://ib.snssdk.com/inspect/intercept/
+! https://clue.oceanengine.com/
+! https://apps.bytesfield.com/app/download
+! https://apps.bytesfield.com/booking/create
+! https://apps.bytesfield.com/booking/upd
+! https://apps.bytesfield.com/booking/detail
+! https://apps.bytesfield.com/booking/notify
+! https://apps.bytesfield.com/customer/api/app/appstore_permit
+! http://hapjs.org/app
+! https://hapjs.org/app
+! https://aweme.snssdk.com/falcon/douyin_falcon/report/?report_ad_type=1&report_from=creative&report_type=ad
+! https://www.chengzijianzhan.com/tetris/page/1597991905137671/
+! https://www.chengzijianzhan.com/site_preload/info
+! https://scc.bytedance.com/ssp_sdk/url_resource
+! https://scc.bytedance.com/scc_sdk/url_scan_v2
+! https://scc.bytedance.com/scc_sdk/adblock_rules/get
+! https://scc.bytedance.com/cloud_control/download_check
+! https://vod-urls.bytedanceapi.com/video/play/1/toutiao/
+! https://zlink.ugsdk.cn/ug/ad/display/store_referrer
+! https://link.wtturl.cn
